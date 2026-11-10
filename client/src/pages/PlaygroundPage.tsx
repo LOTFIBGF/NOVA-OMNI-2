@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { PageHeader } from '@/components/page-header'
 import { MarkdownRenderer } from '@/components/markdown-renderer'
-import { Paperclip, X, Image as ImageIcon, FileAudio, Mic, Square, Info } from 'lucide-react'
+import { Copy, Paperclip, X, Image as ImageIcon, FileAudio, Mic, Square, Info } from 'lucide-react'
 
 const fileToBase64 = (file: File | Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -15,6 +15,15 @@ const fileToBase64 = (file: File | Blob): Promise<string> => {
       resolve(base64)
     }
     reader.onerror = (err) => reject(err)
+    reader.readAsDataURL(file)
+  })
+}
+
+const fileToDataUrl = (file: File | Blob): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error || new Error('File read failed'))
     reader.readAsDataURL(file)
   })
 }
@@ -41,6 +50,13 @@ interface FallbackEntry {
   globallyDisabled?: boolean
 }
 
+interface ConversationSummary {
+  id: string
+  title: string
+  updatedAt?: string
+  createdAt?: string
+}
+
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -57,6 +73,9 @@ interface ChatMessage {
 
 export default function PlaygroundPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [conversations, setConversations] = useState<ConversationSummary[]>([])
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
+  const activeConversationIdRef = useRef<string | null>(null)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string>('auto')
@@ -68,6 +87,118 @@ export default function PlaygroundPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const refreshConversations = async () => {
+    const rows = await apiFetch<ConversationSummary[]>('/api/conversations')
+    setConversations(Array.isArray(rows) ? rows : [])
+    return Array.isArray(rows) ? rows : []
+  }
+
+  const openConversation = async (id: string) => {
+    if (!id) return
+    try {
+      const row = await apiFetch<any>(`/api/conversations/${encodeURIComponent(id)}`)
+      const restored: ChatMessage[] = (row.messages || []).map((message: any) => ({
+        role: message.role,
+        content: message.content || '',
+        imageUrl: message.imageUrl || undefined,
+        audioUrl: message.audioUrl || undefined,
+        meta: message.metadata || message.meta || undefined,
+      }))
+      activeConversationIdRef.current = id
+      setActiveConversationId(id)
+      setMessages(restored)
+      setAttachedFile(null)
+      setFilePreview('')
+    } catch (error) {
+      console.error('Could not open conversation:', error)
+      alert('تعذر تحميل المحادثة. تحقق من الاتصال بالخادم.')
+    }
+  }
+
+  const startNewConversation = () => {
+    activeConversationIdRef.current = null
+    setActiveConversationId(null)
+    setMessages([])
+    setAttachedFile(null)
+    setFilePreview('')
+    inputRef.current?.focus()
+  }
+
+  const ensureConversation = async () => {
+    if (activeConversationIdRef.current) return activeConversationIdRef.current
+    const created = await apiFetch<ConversationSummary>('/api/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'New chat' }),
+    })
+    if (!created?.id) throw new Error('Server did not return a conversation ID')
+    activeConversationIdRef.current = created.id
+    setActiveConversationId(created.id)
+    return created.id
+  }
+
+  const persistMessage = async (conversationId: string, message: ChatMessage) => {
+    await apiFetch(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        role: message.role,
+        content: message.content || '',
+        imageUrl: message.imageUrl || null,
+        audioUrl: message.audioUrl || null,
+        metadata: message.meta || null,
+      }),
+    })
+  }
+
+  const persistAssistantAndDisplay = async (
+    conversationId: string,
+    nextMessages: ChatMessage[],
+  ) => {
+    const assistantMessage = nextMessages[nextMessages.length - 1]
+    if (assistantMessage?.role === 'assistant') {
+      try {
+        await persistMessage(conversationId, assistantMessage)
+      } catch (error) {
+        console.error('Assistant message persistence failed:', error)
+      }
+    }
+    setMessages(nextMessages)
+    try {
+      await refreshConversations()
+    } catch (error) {
+      console.error('Conversation list refresh failed:', error)
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    const restoreLatest = async () => {
+      try {
+        const rows = await apiFetch<ConversationSummary[]>('/api/conversations')
+        if (cancelled) return
+        setConversations(Array.isArray(rows) ? rows : [])
+        if (rows?.length) {
+          const latest = await apiFetch<any>(
+            `/api/conversations/${encodeURIComponent(rows[0].id)}`
+          )
+          if (cancelled) return
+          activeConversationIdRef.current = rows[0].id
+          setActiveConversationId(rows[0].id)
+          setMessages((latest.messages || []).map((message: any) => ({
+            role: message.role,
+            content: message.content || '',
+            imageUrl: message.imageUrl || undefined,
+            audioUrl: message.audioUrl || undefined,
+            meta: message.metadata || message.meta || undefined,
+          })))
+        }
+      } catch (error) {
+        console.error('Conversation restore failed:', error)
+      }
+    }
+    void restoreLatest()
+    return () => { cancelled = true }
+  }, [])
 
   const [isRecording, setIsRecording] = useState(false)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -87,8 +218,10 @@ export default function PlaygroundPage() {
       }
 
       mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' })
-        const file = new File([audioBlob], 'recording.wav', { type: 'audio/wav' })
+        const mimeType = mediaRecorder.mimeType || 'audio/webm'
+        const extension = mimeType.includes('wav') ? 'wav' : 'webm'
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType })
+        const file = new File([audioBlob], `recording.${extension}`, { type: mimeType })
         setAttachedFile(file)
         setFilePreview('')
         stream.getTracks().forEach(track => track.stop())
@@ -146,19 +279,15 @@ export default function PlaygroundPage() {
     }
   }, [mode, availableModels, selectedModel])
 
-  // Revoke object URLs and stop recording on unmount to prevent leaks
+  // Stop the microphone only when the page is actually unmounted.
   useEffect(() => {
     return () => {
-      messages.forEach(m => {
-        if (m.audioUrl) {
-          URL.revokeObjectURL(m.audioUrl)
-        }
-      })
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop()
       }
+      mediaRecorderRef.current?.stream?.getTracks().forEach(track => track.stop())
     }
-  }, [messages])
+  }, [])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -174,6 +303,11 @@ export default function PlaygroundPage() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+    if (file.size > 7 * 1024 * 1024) {
+      alert('حجم الملف أكبر من 7 MB. اختر ملفاً أصغر للحفظ والإرسال.')
+      e.target.value = ''
+      return
+    }
 
     setAttachedFile(file)
     if (file.type.startsWith('image/')) {
@@ -215,7 +349,14 @@ export default function PlaygroundPage() {
     setAttachedFile(null)
     setFilePreview('')
 
+    let activeId: string | null = null
     try {
+      activeId = await ensureConversation()
+      if (mode === 'stt' && fileToSend) {
+        userMsg.audioUrl = await fileToDataUrl(fileToSend)
+      }
+      await persistMessage(activeId, userMsg)
+
       const base = (import.meta.env.VITE_API_URL || import.meta.env.BASE_URL).replace(/\/$/, '')
       const start = Date.now()
       let res: Response
@@ -411,7 +552,7 @@ export default function PlaygroundPage() {
         const contents = messages.map(m => {
           const parts: any[] = [{ text: m.content }]
           if (m.imageUrl && m.role === 'user') {
-            const mimeType = 'image/jpeg'
+            const mimeType = m.imageUrl.match(/^data:([^;]+);/)?.[1] || 'image/jpeg'
             const base64Data = m.imageUrl.split(',')[1]
             parts.push({
               inlineData: {
@@ -461,7 +602,7 @@ export default function PlaygroundPage() {
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }))
-        setMessages([...newMessages, {
+        await persistAssistantAndDisplay(activeId!, [...newMessages, {
           role: 'assistant',
           content: `Error: ${err.error?.message ?? 'Unknown error'}`,
         }])
@@ -491,7 +632,7 @@ export default function PlaygroundPage() {
           }
         }
 
-        setMessages([...newMessages, {
+        await persistAssistantAndDisplay(activeId!, [...newMessages, {
           role: 'assistant',
           content: 'Generated image:',
           imageUrl,
@@ -516,13 +657,13 @@ export default function PlaygroundPage() {
             throw new Error('No audio output found in Gemini response')
           }
           const blob = base64ToBlob(inlinePart.inlineData.data, inlinePart.inlineData.mimeType)
-          audioUrl = URL.createObjectURL(blob)
+          audioUrl = await fileToDataUrl(blob)
         } else {
           const blob = await res.blob()
-          audioUrl = URL.createObjectURL(blob)
+          audioUrl = await fileToDataUrl(blob)
         }
 
-        setMessages([...newMessages, {
+        await persistAssistantAndDisplay(activeId!, [...newMessages, {
           role: 'assistant',
           content: 'Synthesized speech audio:',
           audioUrl,
@@ -549,7 +690,7 @@ export default function PlaygroundPage() {
           ? (data.candidates?.[0]?.content?.parts?.[0]?.text ?? JSON.stringify(data, null, 2))
           : (data.text || JSON.stringify(data, null, 2))
 
-        setMessages([...newMessages, {
+        await persistAssistantAndDisplay(activeId!, [...newMessages, {
           role: 'assistant',
           content: contentText,
           meta: {
@@ -578,7 +719,7 @@ export default function PlaygroundPage() {
         keyUsed: keyUsed ?? undefined,
       } : undefined)
 
-      setMessages([...newMessages, {
+      await persistAssistantAndDisplay(activeId!, [...newMessages, {
         role: 'assistant',
         content,
         meta: {
@@ -590,7 +731,7 @@ export default function PlaygroundPage() {
         },
       }])
     } catch (err: any) {
-      setMessages([...newMessages, {
+      await persistAssistantAndDisplay(activeId!, [...newMessages, {
         role: 'assistant',
         content: `Error: ${err.message}`,
       }])
@@ -608,13 +749,8 @@ export default function PlaygroundPage() {
   }
 
   const handleClear = () => {
-    setMessages([])
-    setAttachedFile(null)
-    setFilePreview('')
-    if (isRecording) {
-      stopRecording()
-    }
-    inputRef.current?.focus()
+    startNewConversation()
+    if (isRecording) stopRecording()
   }
 
   const activeModelLabel = selectedModel === 'auto'
@@ -697,11 +833,25 @@ export default function PlaygroundPage() {
                 ))}
               </SelectContent>
             </Select>
-            {messages.length > 0 && (
-              <Button variant="outline" size="sm" onClick={handleClear}>
-                Clear
-              </Button>
-            )}
+            <select
+              aria-label="Conversation history"
+              value={activeConversationId || ''}
+              onChange={e => {
+                if (e.target.value) void openConversation(e.target.value)
+                else startNewConversation()
+              }}
+              className="h-9 max-w-[190px] rounded-md border bg-background px-2 text-xs"
+            >
+              <option value="">New chat</option>
+              {conversations.map(conversation => (
+                <option key={conversation.id} value={conversation.id}>
+                  {(conversation.title || 'New chat').slice(0, 45)}
+                </option>
+              ))}
+            </select>
+            <Button variant="outline" size="sm" onClick={handleClear}>
+              New Chat
+            </Button>
           </div>
         }
       />
@@ -734,7 +884,16 @@ export default function PlaygroundPage() {
           ) : (
             <>
               {messages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard.writeText(msg.content)}
+                    title="Copy message"
+                    aria-label="Copy message"
+                    className="mb-1 p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  >
+                    <Copy className="h-4 w-4" />
+                  </button>
                   <div
                     className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
                       msg.role === 'user'

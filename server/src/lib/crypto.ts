@@ -87,7 +87,73 @@ export function maskKey(key: string): string {
   return key.slice(0, 4) + '...' + key.slice(-4);
 }
 
+const PASSWORD_HASH_ALGORITHM = 'sha256';
+const PASSWORD_HASH_ITERATIONS = 600_000;
+const PASSWORD_SALT_BYTES = 16;
+const PASSWORD_HASH_BYTES = 32;
+const LEGACY_PASSWORD_SALT = 'omnikey-admin-salt-12345';
+
 export function hashPassword(password: string): string {
-  const salt = 'omnikey-admin-salt-12345';
-  return crypto.createHmac('sha256', salt).update(password).digest('hex');
+  const salt = crypto.randomBytes(PASSWORD_SALT_BYTES);
+  const derivedKey = crypto.pbkdf2Sync(
+    password,
+    salt,
+    PASSWORD_HASH_ITERATIONS,
+    PASSWORD_HASH_BYTES,
+    PASSWORD_HASH_ALGORITHM,
+  );
+
+  return [
+    'pbkdf2',
+    PASSWORD_HASH_ITERATIONS,
+    salt.toString('hex'),
+    derivedKey.toString('hex'),
+  ].join('$');
+}
+
+export function verifyPassword(password: string, storedHash: string): boolean {
+  if (typeof password !== 'string' || typeof storedHash !== 'string') {
+    return false;
+  }
+
+  if (storedHash.startsWith('pbkdf2$')) {
+    const parts = storedHash.split('$');
+    if (parts.length !== 4) return false;
+
+    const iterations = Number(parts[1]);
+    if (
+      !Number.isInteger(iterations) ||
+      iterations < 100_000 ||
+      iterations > 2_000_000 ||
+      !/^[0-9a-f]{32}$/i.test(parts[2]) ||
+      !/^[0-9a-f]{64}$/i.test(parts[3])
+    ) {
+      return false;
+    }
+
+    const expected = Buffer.from(parts[3], 'hex');
+    const actual = crypto.pbkdf2Sync(
+      password,
+      Buffer.from(parts[2], 'hex'),
+      iterations,
+      PASSWORD_HASH_BYTES,
+      PASSWORD_HASH_ALGORITHM,
+    );
+
+    return crypto.timingSafeEqual(actual, expected);
+  }
+
+  if (!/^[0-9a-f]{64}$/i.test(storedHash)) return false;
+
+  const expected = Buffer.from(storedHash, 'hex');
+  const actual = crypto
+    .createHmac('sha256', LEGACY_PASSWORD_SALT)
+    .update(password)
+    .digest();
+
+  return crypto.timingSafeEqual(actual, expected);
+}
+
+export function needsPasswordRehash(storedHash: string): boolean {
+  return !storedHash.startsWith('pbkdf2$');
 }

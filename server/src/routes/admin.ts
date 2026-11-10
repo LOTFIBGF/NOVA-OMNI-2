@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Response, NextFunction, Request } from 'express';
 import crypto from 'crypto';
 import { getDb } from '../db/index.js';
-import { hashPassword } from '../lib/crypto.js';
+import { hashPassword, verifyPassword, needsPasswordRehash } from '../lib/crypto.js';
 import { isLocalDbEnabled } from '../db/context.js';
 import { AdminUser } from '../models/AdminUser.js';
 import { UserSettings } from '../models/UserSettings.js';
@@ -97,19 +97,27 @@ adminRouter.post('/login', async (req, res, next) => {
       return;
     }
 
-    const hashed = hashPassword(password);
     let match = false;
 
     if (isLocalDbEnabled()) {
       const db = getDb();
       const row = db.prepare('SELECT * FROM admin_users WHERE username = ?').get(username) as any;
-      if (row && row.password_hash === hashed) {
+      if (row && verifyPassword(password, row.password_hash)) {
         match = true;
+        if (needsPasswordRehash(row.password_hash)) {
+          const upgradedHash = hashPassword(password);
+          db.prepare('UPDATE admin_users SET password_hash = ? WHERE username = ? AND password_hash = ?')
+            .run(upgradedHash, username, row.password_hash);
+        }
       }
     } else {
       const user = await AdminUser.findOne({ username });
-      if (user && user.passwordHash === hashed) {
+      if (user && verifyPassword(password, user.passwordHash)) {
         match = true;
+        if (needsPasswordRehash(user.passwordHash)) {
+          user.passwordHash = hashPassword(password);
+          await user.save();
+        }
       }
     }
 

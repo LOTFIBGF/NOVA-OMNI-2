@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import os from 'node:os';
 import Database from 'better-sqlite3';
 import { initDb } from '../../db/index.js';
 
@@ -10,7 +11,7 @@ describe('Migration idempotency', () => {
   it('initDb on a fresh in-memory DB then re-run produces identical row counts', () => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
     // Use a single shared file so both inits hit the same DB.
-    const tmpPath = `/tmp/freeapi-idempotency-${Date.now()}.db`;
+    const tmpPath = `${os.tmpdir()}/freeapi-idempotency-${Date.now()}.db`;
 
     const db1 = initDb(tmpPath);
     const before = {

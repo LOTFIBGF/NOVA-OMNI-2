@@ -3,6 +3,13 @@ import type { Request, Response, NextFunction } from 'express';
 import { UserSettings } from '../models/UserSettings.js';
 import { isLocalDbEnabled } from '../db/context.js';
 
+function isLoopbackRequest(req: Request): boolean {
+  const address = req.socket.remoteAddress;
+  return address === '127.0.0.1' ||
+    address === '::1' ||
+    address === '::ffff:127.0.0.1';
+}
+
 // Initialize Firebase Admin SDK
 if (admin.apps.length === 0) {
   const projectId = process.env.FIREBASE_PROJECT_ID || 'omnikey-ai';
@@ -28,14 +35,14 @@ export async function requireDashboardAuth(
   next: NextFunction
 ) {
   // If local DB is enabled, bypass auth completely
-  if (isLocalDbEnabled()) {
+  if (isLocalDbEnabled() && isLoopbackRequest(req)) {
     req.userId = 'local-dev-user-uid';
     req.userEmail = 'local-dev-user@example.com';
     return next();
   }
 
   // Option to bypass auth check in local dev environments if not configured
-  if (!process.env.FIREBASE_PROJECT_ID) {
+  if (!process.env.FIREBASE_PROJECT_ID && isLoopbackRequest(req)) {
     req.userId = 'local-dev-user-uid';
     req.userEmail = 'local-dev-user@example.com';
     return next();
@@ -75,7 +82,7 @@ export async function requireProxyAuth(
   next: NextFunction
 ) {
   // If local DB is enabled, bypass MongoDB validation (SQLite checks are handled inline in proxy)
-  if (isLocalDbEnabled()) {
+  if (isLocalDbEnabled() && isLoopbackRequest(req)) {
     req.userId = 'local-dev-user-uid';
     return next();
   }

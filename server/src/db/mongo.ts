@@ -11,11 +11,6 @@ try {
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
-if (!MONGODB_URI) {
-  console.error('CRITICAL: MONGODB_URI is not defined in the environment variables.');
-  process.exit(1);
-}
-
 export async function connectMongo(): Promise<typeof mongoose> {
   if (!MONGODB_URI) {
     throw new Error('CRITICAL: MONGODB_URI environment variable is not defined.');

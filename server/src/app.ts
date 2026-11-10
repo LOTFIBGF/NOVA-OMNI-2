@@ -38,15 +38,10 @@ export function createApp() {
   const app = express();
   const allowedCorsOrigins = getAllowedCorsOrigins();
 
-  // Dynamic Per-Request Database Context Middleware
-  app.use((req, res, next) => {
-    let mode = req.headers['x-database-mode'] as 'local' | 'cloud' | undefined;
-    if (!mode || (mode !== 'local' && mode !== 'cloud')) {
-      mode = process.env.MONGODB_URI ? 'cloud' : 'local';
-    }
-    dbModeStorage.run(mode, () => {
-      next();
-    });
+  // Server-controlled database context. Never trust client headers for DB selection.
+  app.use((_req, _res, next) => {
+    const mode = isLocalDbEnabled() ? 'local' : 'cloud';
+    dbModeStorage.run(mode, () => next());
   });
 
   // Dynamic HSTS for secure production HTTPS deployments, bypassing localhost

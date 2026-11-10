@@ -13,10 +13,11 @@ import { createApp } from './app.js';
 import { initDb } from './db/index.js';
 import { connectMongo } from './db/mongo.js';
 import { seedMongoModels, seedMongoAdmin, seedMongoAdminEmails } from './db/mongoSeed.js';
-import { isLocalDbEnabled } from './db/context.js';
+import { isLocalDbEnabled, setDatabaseMode } from './db/context.js';
 import { startHealthChecker } from './services/health.js';
 
 const PORT = process.env.PORT ?? 3001;
+const HOST = process.env.HOST ?? '127.0.0.1';
 
 async function main() {
   const localMode = isLocalDbEnabled();
@@ -35,8 +36,10 @@ async function main() {
       await seedMongoModels();
       await seedMongoAdmin();
       await seedMongoAdminEmails();
+      setDatabaseMode('cloud');
       mongoConnected = true;
     } catch (err: any) {
+      setDatabaseMode('local');
       console.warn('\n========================================================================');
       console.warn('⚠️  MONGODB CONNECTION WARNING:');
       console.warn('Could not establish initial connection to your cloud MongoDB Cluster.');
@@ -57,9 +60,9 @@ async function main() {
 
   const app = createApp();
 
-  app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
-    console.log(`Proxy endpoint: http://0.0.0.0:${PORT}/v1/chat/completions`);
+  app.listen(Number(PORT), HOST, () => {
+    console.log(`Server running on http://${HOST}:${PORT}`);
+    console.log(`Proxy endpoint: http://${HOST}:${PORT}/v1/chat/completions`);
     startHealthChecker();
   });
 }

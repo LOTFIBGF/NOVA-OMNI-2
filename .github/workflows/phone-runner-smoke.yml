@@ -1,0 +1,23 @@
+name: Phone Runner Smoke Test
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  phone-runner-smoke:
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Test phone runner
+        run: |
+          echo "NOVA-OMNI PHONE RUNNER WORKING"
+          uname -a
+          uname -m
+          id
+          git --version
